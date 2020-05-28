@@ -1,19 +1,23 @@
-﻿# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Author:      Patrick Keisler, Microsoft
 # Date:        Nov 2017
-#
-# History:
-# Date         Name                     Comment
-# -----------  -----------------------  ----------------------------------------
-# 06 Nov 2017  Patrick Keisler (MSFT)   Created
 #
 # File Name:   Invoke-MorningHealthChecks.ps1
 #
 # Purpose:     PowerShell script to automate morning health checks.
 #
+# History:
+# Date         Comment
+# -----------  ----------------------------------------------------------------
+# 06 Nov 2017  Created
+# 27 May 2020  Changed error trapping to continue processing when a server is offline.
+# 27 May 2020  Added "is enabled" check for the failed jobs function.
+# 27 May 2020  Fixed bug in the database status funtion for mirrored databases.
+# 27 May 2020  Added a new check for Windows Cluster node status.
+# 27 May 2020  Added a new check for SQL service(s) status.
 # -----------------------------------------------------------------------------
 #
-# Copyright (C) 2017 Microsoft Corporation
+# Copyright (C) 2020 Microsoft Corporation
 #
 # Disclaimer:
 #   This is SAMPLE code that is NOT production ready. It is the sole intention of this code to provide a proof of concept as a
@@ -113,7 +117,8 @@ function Get-Error {
   param(
     [CmdletBinding()]
     [Parameter(Position=0,ParameterSetName='PowerShellError',Mandatory=$true)] [System.Management.Automation.ErrorRecord]$PSError,
-    [Parameter(Position=0,ParameterSetName='ApplicationError',Mandatory=$true)] [string]$AppError
+    [Parameter(Position=0,ParameterSetName='ApplicationError',Mandatory=$true)] [string]$AppError,
+		[Parameter(Position=1,Mandatory=$false)] [switch]$ContinueAfterError
   )
 
   if ($PSError) {
@@ -129,7 +134,8 @@ function Get-Error {
       Write-Host $err.InnerException.Message
       $err = $err.InnerException
     }
-    Throw
+		if ($ContinueAfterError) { Continue }
+    else { Throw }
   }
   elseif ($AppError) {
     #Process an application error
@@ -137,7 +143,8 @@ function Get-Error {
     Write-Host 'Error Count: 1'
     Write-Host '******************************'
     Write-Host $AppError
-    Throw
+		if ($ContinueAfterError) { Continue }
+    else { Throw }
   }
 } #Get-Error
 
@@ -182,7 +189,13 @@ function Get-SqlConnection {
     }
 	
   $con.ApplicationName = $applicationName
-  $con.Connect()
+  try {
+    $con.Connect()
+  }
+  catch {
+    Write-Host "`nCRITICAL:" -BackgroundColor Red -ForegroundColor White -NoNewline; Write-Host " $targetServer`n"
+    Get-Error $_ -ContinueAfterError
+  }
 
   Write-Output $con
     
@@ -398,7 +411,7 @@ function Get-SqlUpTime {
         $sqlStartupTime = $server.ExecuteScalar($cmd)
     }
     catch {
-        Get-Error $_
+        Get-Error $_ -ContinueAfterError
     }
 
     $upTime = (New-TimeSpan -Start ($sqlStartupTime) -End ($script:startTime))
@@ -430,12 +443,17 @@ function Get-DatabaseStatus {
     #Get status of each database
     $server = Get-SqlConnection $targetServer
 
-    $cmd = "SELECT [name] AS [database_name], state_desc FROM sys.databases;"
+    $cmd = @"
+		SELECT [name] AS [database_name], state_desc FROM sys.databases d
+    JOIN sys.database_mirroring dm ON d.database_id = dm.database_id
+    WHERE dm.mirroring_role_desc <> 'MIRROR'
+    OR dm.mirroring_role_desc IS NULL;
+"@
     try {
         $results = $server.ExecuteWithResults($cmd)
     }
     catch {
-        Get-Error $_
+        Get-Error $_ -ContinueAfterError
     }
 
     #Display the results to the console
@@ -482,7 +500,7 @@ function Get-AGStatus {
         $results = $server.ExecuteWithResults($cmd)
     }
     catch {
-        Get-Error $_
+        Get-Error $_ -ContinueAfterError
     }
 
     #Display the results to the console
@@ -576,7 +594,7 @@ function Get-DatabaseBackupStatus {
         $results = $server.ExecuteWithResults($cmd)
     }
     catch {
-        Get-Error $_
+        Get-Error $_ -ContinueAfterError
     }
 
     #Display the results to the console
@@ -619,7 +637,7 @@ function Get-DiskSpace {
         $results = $server.ExecuteWithResults($cmd)
     }
     catch {
-        Get-Error $_
+        Get-Error $_ -ContinueAfterError
     }
 
     #Display the results to the console
@@ -663,6 +681,7 @@ function Get-FailedJobs {
     INNER JOIN msdb.dbo.sysjobactivity a ON j.job_id = a.job_id
     LEFT JOIN msdb.dbo.sysjobhistory h ON a.job_history_id = h.instance_id
     WHERE a.session_id = (SELECT MAX(session_id) FROM msdb.dbo.sysjobactivity)
+		AND j.enabled = 1
     ORDER BY j.name;
 "@
 
@@ -671,7 +690,7 @@ function Get-FailedJobs {
         $results = $server.ExecuteWithResults($cmd)
     }
     catch {
-        Get-Error $_
+        Get-Error $_ -ContinueAfterError
     }
 
     #Display the results to the console
@@ -731,6 +750,86 @@ function Get-AppLogEvents {
     else { Write-Host "`nGOOD:" -BackgroundColor Green -ForegroundColor Black -NoNewline; Write-Host " $($server.TrueName)" }
 } #Get-AppLogEvents
 
+function Get-ServiceStatus {
+  Param (
+    [CmdletBinding()]
+    [parameter(Position=0,Mandatory=$true)][ValidateNotNullOrEmpty()]$targetServer
+    )
+
+    $cmd = "SELECT servicename,CASE SERVERPROPERTY('IsClustered') WHEN 0 THEN startup_type_desc WHEN 1 THEN 'Automatic' END AS startup_type_desc,status_desc FROM sys.dm_server_services;"
+
+    #Get status of each SQL service
+    $server = Get-SqlConnection $targetServer
+    try {
+        $results = $server.ExecuteWithResults($cmd)
+    }
+    catch {
+        Get-Error $_ -ContinueAfterError
+    }
+
+    #Display the results to the console
+    if ($results.Tables[0] | Where-Object {$_.status_desc -ne 'Running' -and $_.startup_type_desc -eq 'Automatic'}) {
+        Write-Host "`nCRITICAL:" -BackgroundColor Red -ForegroundColor White -NoNewline; Write-Host " $($server.TrueName)"
+    }
+    else { Write-Host "`nGOOD:" -BackgroundColor Green -ForegroundColor Black -NoNewline; Write-Host " $($server.TrueName)" }
+
+    #Display the results to the console
+    if ($results.Tables[0] | Where-Object {$_.status_desc -ne 'Running' -and $_.startup_type_desc -eq 'Automatic'}) {
+        $results.Tables[0] | ForEach-Object {
+            Write-Host "$($_.servicename): $($_.status_desc)"
+        }
+    }
+} #Get-ServiceStatus
+
+function Get-ClusterStatus {
+  Param (
+    [CmdletBinding()]
+    [parameter(Position=0,Mandatory=$true)][ValidateNotNullOrEmpty()]$targetServer
+    )
+
+    $cmd = @"
+    SELECT
+         NodeName AS cluster_node_name
+        ,UPPER(status_description) AS cluster_node_status
+    FROM sys.dm_os_cluster_nodes
+    UNION
+    SELECT
+         member_name AS cluster_node_name
+        ,member_state_desc AS cluster_node_status
+    FROM sys.dm_hadr_cluster_members
+    WHERE member_type = 0;
+"@
+
+    #If one exists, get status of each Availability Group
+    $server = Get-SqlConnection $targetServer
+    try {
+        $results = $server.ExecuteWithResults($cmd)
+    }
+    catch {
+        Get-Error $_ -ContinueAfterError
+    }
+
+    #Display the results to the console
+    if ($results.Tables[0].Rows.Count -ne 0) {
+        if ($results.Tables[0] | Where-Object {$_.cluster_node_status -ne 'UP'}) {
+            Write-Host "`nCRITICAL:" -BackgroundColor Red -ForegroundColor White -NoNewline; Write-Host " $($server.TrueName)"
+        }
+        else { Write-Host "`nGOOD:" -BackgroundColor Green -ForegroundColor Black -NoNewline; Write-Host " $($server.TrueName)" }
+    }
+
+    #Display the results to the console
+    if ($results.Tables[0] | Where-Object {$_.cluster_node_status -ne 'UP'}) {
+        $results.Tables[0] | ForEach-Object {
+            if ($_.cluster_node_status -ne 'UP') {
+                Write-Host "$($_.cluster_node_name): $($_.cluster_node_status)" -BackgroundColor Red -ForegroundColor White
+            }
+            else {
+                Write-Host "$($_.cluster_node_name): $($_.cluster_node_status)"
+            }
+        }
+    }
+} #Get-ClusterStatus
+
 ####################   MAIN   ########################
 Clear-Host
 
@@ -748,30 +847,38 @@ else {
 
 #Check uptime of each SQL Server
 Write-Host "##########  SQL Server Uptime Report (DD.HH:MM:SS):  ##########" -BackgroundColor Black -ForegroundColor Green
-$targetServerList | ForEach-Object { Get-SqlUptime -targetServer $_}
+ForEach ($targetServer in $targetServerList) { Get-SqlUptime -targetServer $targetServer}
+
+#Get the status of each SQL service
+Write-Host "`n##########  SQL Service(s) Status Report:  ##########" -BackgroundColor Black -ForegroundColor Green
+ForEach ($targetServer in $targetServerList) { Get-ServiceStatus -targetServer $targetServer }
+
+#Get the state of each Windows cluster node
+Write-Host "`n##########  Windows Cluster Node Status Report:  ##########" -BackgroundColor Black -ForegroundColor Green
+ForEach ($targetServer in $targetServerList) { Get-ClusterStatus -targetServer $targetServer }
 
 #Get status of each database for each server
 Write-Host "`n##########  Database Status Report:  ##########" -BackgroundColor Black -ForegroundColor Green
-$targetServerList | ForEach-Object { Get-DatabaseStatus -targetServer $_}
+ForEach ($targetServer in $targetServerList) { Get-DatabaseStatus -targetServer $targetServer}
 
 #Get status of each Availability Group for each server
 Write-Host "`n##########  Availability Groups Report:  ##########" -BackgroundColor Black -ForegroundColor Green
-$targetServerList | ForEach-Object { Get-AGStatus -targetServer $_}
+ForEach ($targetServer in $targetServerList) { Get-AGStatus -targetServer $targetServer}
 
 #Get the most recent backup of each database
 Write-Host "`n##########  Database Backup Report:  ##########" -BackgroundColor Black -ForegroundColor Green
-$targetServerList | ForEach-Object { Get-DatabaseBackupStatus -targetServer $_}
+ForEach ($targetServer in $targetServerList) { Get-DatabaseBackupStatus -targetServer $targetServer}
 
 #Get the disk space info for each server
 Write-Host "`n##########  Disk Space Report:  ##########" -BackgroundColor Black -ForegroundColor Green
-$targetServerList | ForEach-Object { Get-DiskSpace -targetServer $_}
+ForEach ($targetServer in $targetServerList) { Get-DiskSpace -targetServer $targetServer}
 
 #Get the failed jobs for each server
 Write-Host "`n##########  Failed Jobs Report:  ##########" -BackgroundColor Black -ForegroundColor Green
-$targetServerList | ForEach-Object { Get-FailedJobs -targetServer $_}
+ForEach ($targetServer in $targetServerList) { Get-FailedJobs -targetServer $targetServer}
 
 #Check the Application event log for SQL errors
 Write-Host "`n##########  Application Event Log Report:  ##########" -BackgroundColor Black -ForegroundColor Green
-$targetServerList | ForEach-Object { Get-AppLogEvents -targetServer $_}
+ForEach ($targetServer in $targetServerList) { Get-AppLogEvents -targetServer $targetServer}
 
 Write-Host "`nElapsed Time: $(New-TimeSpan -Start $startTime -End (Get-Date))"
