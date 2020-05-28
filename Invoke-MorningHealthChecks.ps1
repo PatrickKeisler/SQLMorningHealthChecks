@@ -1,4 +1,4 @@
-﻿# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Author:      Patrick Keisler, Microsoft
 # Date:        Nov 2017
 #
@@ -134,7 +134,7 @@ function Get-Error {
       Write-Host $err.InnerException.Message
       $err = $err.InnerException
     }
-		if ($ContinueAfterError) { Continue }
+    if ($ContinueAfterError) { Continue }
     else { Throw }
   }
   elseif ($AppError) {
@@ -143,7 +143,7 @@ function Get-Error {
     Write-Host 'Error Count: 1'
     Write-Host '******************************'
     Write-Host $AppError
-		if ($ContinueAfterError) { Continue }
+    if ($ContinueAfterError) { Continue }
     else { Throw }
   }
 } #Get-Error

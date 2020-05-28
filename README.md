@@ -13,4 +13,5 @@ This script answers the following questions about your SQL Servers.
 9. What errors appeared in the SQL errorlog in the last 24 hours?
 
 For a full description of how this script works, read the article here.
+
 https://docs.microsoft.com/en-us/archive/blogs/samlester/sql-server-dba-morning-health-checks
