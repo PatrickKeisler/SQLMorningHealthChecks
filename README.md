@@ -1,6 +1,6 @@
 # SQLMorningHealthChecks
 
-Supported On-prem Versions: SQL Server 2012 and higher
+### Supported On-prem Versions: SQL Server 2012 and higher
 
 This script answers the following questions about your SQL Servers.
 
