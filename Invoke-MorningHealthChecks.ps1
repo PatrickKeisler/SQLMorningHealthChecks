@@ -521,7 +521,7 @@ function Get-AGStatus {
     }
     else {
       Write-Host "`nGOOD:" -BackgroundColor Green -ForegroundColor Black -NoNewline; Write-Host " $($server.TrueName)"
-      Write-Host '*** No Availabiliy Groups found ***'
+      Write-Host '*** No Availabiliy Groups detected ***'
     }
 } #Get-AGStatus
 
@@ -827,6 +827,10 @@ function Get-ClusterStatus {
                 Write-Host "$($_.cluster_node_name): $($_.cluster_node_status)"
             }
         }
+    }
+    if ($results.Tables[0].Rows.Count -eq 0) {
+      Write-Host "`nGOOD:" -BackgroundColor Green -ForegroundColor Black -NoNewline; Write-Host " $($server.TrueName)"
+      Write-Host '*** No cluster detected ***'
     }
 } #Get-ClusterStatus
 
